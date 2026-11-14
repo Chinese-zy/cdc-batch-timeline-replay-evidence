@@ -1,0 +1,2 @@
+{"event_id":"e1","customer_id":"c1","version":1,"event_ts":"2026-01-01T00:00:00+00:00","op":"upsert","payload":{"name":"A","email":"a@x","tier":"bronze"}}
+
