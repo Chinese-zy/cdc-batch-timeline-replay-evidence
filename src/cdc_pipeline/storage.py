@@ -17,6 +17,31 @@ def connect(path: str | Path) -> sqlite3.Connection:
     return conn
 
 
+def _column_names(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add audit columns introduced after the initial schema.
+
+    SQLite cannot add a NOT NULL column without a default; the defaults keep
+    rows written by older builds readable.
+    """
+    events_cols = _column_names(conn, "applied_events")
+    if "status" not in events_cols:
+        conn.execute("ALTER TABLE applied_events ADD COLUMN status TEXT NOT NULL DEFAULT 'applied'")
+    if "payload_hash" not in events_cols:
+        conn.execute("ALTER TABLE applied_events ADD COLUMN payload_hash TEXT NOT NULL DEFAULT ''")
+
+    batches_cols = _column_names(conn, "applied_batches")
+    if "schema_version" not in batches_cols:
+        conn.execute(
+            "ALTER TABLE applied_batches ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1"
+        )
+    if "recovered_at" not in batches_cols:
+        conn.execute("ALTER TABLE applied_batches ADD COLUMN recovered_at TEXT")
+
+
 def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
@@ -40,14 +65,18 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             customer_id TEXT NOT NULL,
             event_version INTEGER NOT NULL,
             event_ts TEXT NOT NULL,
-            applied_at TEXT NOT NULL
+            applied_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'applied',
+            payload_hash TEXT NOT NULL DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS applied_batches (
             batch_id TEXT PRIMARY KEY,
             manifest_hash TEXT NOT NULL,
             applied_at TEXT NOT NULL,
             event_count INTEGER NOT NULL,
-            status TEXT NOT NULL
+            status TEXT NOT NULL,
+            schema_version INTEGER NOT NULL DEFAULT 1,
+            recovered_at TEXT
         );
         CREATE TABLE IF NOT EXISTS pipeline_meta (
             key TEXT PRIMARY KEY,
@@ -55,6 +84,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    _migrate(conn)
     conn.execute(
         "INSERT OR IGNORE INTO pipeline_meta(key, value) VALUES ('schema_version', ?)",
         (str(CURRENT_SCHEMA),),
@@ -74,4 +104,3 @@ def read_jsonl(path: str | Path) -> Iterable[dict[str, Any]]:
             if not isinstance(value, dict):
                 raise ValueError(f"line {number} must contain a JSON object")
             yield value
-
